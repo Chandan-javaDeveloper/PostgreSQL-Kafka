@@ -1,0 +1,5 @@
+{"properties": [{
+  "name": "cache.clear.zone",
+  "type": "java.lang.String",
+  "description": "A description for 'cache.clear.zone'"
+}]}

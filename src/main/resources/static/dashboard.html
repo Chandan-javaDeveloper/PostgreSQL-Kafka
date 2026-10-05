@@ -1,0 +1,238 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Kafka DB Services</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      padding: 20px;
+      max-width: 1200px;
+      margin: auto;
+      background: #fefefe;
+    }
+    h2 { text-align: center; margin-bottom: 20px; }
+
+    /* Chart grid */
+    .chart-grid {
+      display: flex;
+      justify-content: space-between;
+      gap: 15px;
+      margin-bottom: 30px;
+    }
+    .chart-container {
+      flex: 1 1 0;
+      min-width: 0;
+      background: #fff;
+      padding: 10px;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      height: 240px;
+    }
+    .chart-container canvas { flex: 1; }
+    .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+    .chart-header h3 { margin: 0; font-size: 1rem; color: #333; }
+    #uptimeDisplay { font-weight: bold; color: #1a73e8; }
+
+    /* Topic progress bars */
+    .progress-wrapper {
+      margin-bottom: 15px;
+    }
+    .topic-name {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .progress-bar {
+      position: relative;
+      background: #eee;
+      border-radius: 8px;
+      height: 18px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+    /* Background (consumed) */
+    .progress-bar::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      background: #b39ddb; /* light purple for consumed */
+    }
+    /* Foreground (saved) */
+    .progress-fill {
+      position: relative;
+      height: 100%;
+      background: linear-gradient(90deg, #43a047, #81c784); /* green gradient */
+      transition: width 0.6s ease;
+      border-radius: 8px 0 0 8px;
+    }
+    .progress-text {
+      font-size: 0.9rem;
+      color: #555;
+    }
+
+    /* Responsive */
+    @media (max-width: 1200px) { .chart-grid { flex-wrap: wrap; } }
+    @media (max-width: 800px) { .chart-grid { flex-direction: column; } }
+  </style>
+</head>
+<body>
+
+<h2>
+  Kafka DB Service 
+  <span id="buildInfo" style="font-size:0.8rem; color:#666; margin-left:10px;">Loading...</span>
+</h2>
+
+<!-- Charts -->
+<div class="chart-grid">
+  <div class="chart-container">
+    <div class="chart-header"><h3>Uptime</h3><span id="uptimeDisplay">Loading...</span></div>
+    <canvas id="uptimeChart"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-header"><h3>JVM Memory (MB)</h3><span id="memoryDisplay">0 MB</span></div>
+    <canvas id="memoryChart"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-header"><h3>CPU Load (%)</h3><span id="cpuDisplay">0%</span></div>
+    <canvas id="cpuChart"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-header"><h3>Thread Count</h3><span id="threadDisplay">0</span></div>
+    <canvas id="threadChart"></canvas>
+  </div>
+</div>
+
+<!-- Topic progress -->
+<h3>Today's Topic Progress</h3>
+<div id="topicMetrics">Loading...</div>
+
+<script>
+const labels = [], uptimeData = [], memoryUsedData = [], memoryMaxData = [], cpuData = [], threadData = [];
+
+function createChart(ctx, datasets) {
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }
+  });
+}
+
+const uptimeChart = createChart(document.getElementById("uptimeChart"), [
+  { label: "Uptime (days)", data: uptimeData, borderColor: "blue", fill: false }
+]);
+const memoryChart = createChart(document.getElementById("memoryChart"), [
+  { label: "Used", data: memoryUsedData, borderColor: "green", fill: false },
+  { label: "Max", data: memoryMaxData, borderColor: "gray", fill: false }
+]);
+const cpuChart = createChart(document.getElementById("cpuChart"), [
+  { label: "CPU Load", data: cpuData, borderColor: "orange", fill: false }
+]);
+const threadChart = createChart(document.getElementById("threadChart"), [
+  { label: "Threads", data: threadData, borderColor: "purple", fill: false }
+]);
+
+function formatUptime(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  let parts = [];
+  if (days > 0) parts.push(days + "d");
+  if (hours > 0) parts.push(hours + "h");
+  if (minutes > 0) parts.push(minutes + "m");
+  return parts.join(" ") || "0m";
+}
+
+async function updateCharts() {
+  const timestamp = new Date().toLocaleTimeString();
+  labels.push(timestamp);
+  if (labels.length > 20) {
+    labels.shift(); memoryUsedData.shift(); memoryMaxData.shift(); cpuData.shift(); threadData.shift(); uptimeData.shift();
+  }
+
+  const [uptime, memUsed, memMax, cpu, threads] = await Promise.all([
+    fetch('/actuator/metrics/process.uptime').then(r => r.json()),
+    fetch('/actuator/metrics/jvm.memory.used').then(r => r.json()),
+    fetch('/actuator/metrics/jvm.memory.max').then(r => r.json()),
+    fetch('/actuator/metrics/system.cpu.usage').then(r => r.json()),
+    fetch('/actuator/metrics/jvm.threads.live').then(r => r.json())
+  ]);
+
+  const uptimeSeconds = Math.floor(uptime.measurements[0].value);
+  document.getElementById("uptimeDisplay").textContent = formatUptime(uptimeSeconds);
+  uptimeData.push(uptimeSeconds / 86400);
+
+  const usedMB = (memUsed.measurements[0].value / 1024 / 1024).toFixed(2);
+  const maxMB = (memMax.measurements[0].value / 1024 / 1024).toFixed(2);
+  memoryUsedData.push(usedMB);
+  memoryMaxData.push(maxMB);
+  document.getElementById("memoryDisplay").textContent = `${usedMB} MB`;
+
+  const cpuPct = (cpu.measurements[0].value * 100).toFixed(2);
+  cpuData.push(cpuPct);
+  document.getElementById("cpuDisplay").textContent = `${cpuPct}%`;
+
+  const threadCount = threads.measurements[0].value.toFixed(0);
+  threadData.push(threadCount);
+  document.getElementById("threadDisplay").textContent = threadCount;
+
+  uptimeChart.update(); memoryChart.update(); cpuChart.update(); threadChart.update();
+}
+
+async function updateTopicMetrics() {
+  try {
+    const res = await fetch('/metrics/all');
+    const data = await res.json();
+    const container = document.getElementById('topicMetrics');
+    container.innerHTML = '';
+
+    // Sort topics by consumed descending
+    const sortedTopics = Object.entries(data).sort(
+      (a, b) => (b[1].consumed || 0) - (a[1].consumed || 0)
+    );
+
+    sortedTopics.forEach(([topic, stats]) => {
+      const consumed = stats.consumed || 0;
+      const saved = stats.saved || 0;
+      const percent = consumed > 0 ? ((saved / consumed) * 100).toFixed(1) : 0;
+
+      container.insertAdjacentHTML('beforeend', `
+        <div class="progress-wrapper">
+          <div class="topic-name">${topic}</div>
+          <div class="progress-bar">
+            <div class="progress-fill" style="width:${percent}%;"></div>
+          </div>
+          <div class="progress-text">
+            Consumed: ${consumed.toLocaleString()} | Saved: ${saved.toLocaleString()} (${percent}%)
+          </div>
+        </div>
+      `);
+    });
+  } catch (err) {
+    console.error("Failed to fetch metrics:", err);
+  }
+}
+
+updateCharts();
+updateTopicMetrics();
+setInterval(updateCharts, 5000);
+setInterval(updateTopicMetrics, 20000);
+
+async function loadBuildInfo() {
+  try {
+    const res = await fetch("/actuator/info");
+    const info = await res.json();
+    document.getElementById("buildInfo").textContent =
+      `(v${info.build.version} - ${new Date(info.build.time).toLocaleString()})`;
+  } catch(e) {
+    document.getElementById("buildInfo").textContent = "(build info unavailable)";
+  }
+}
+loadBuildInfo();
+</script>
+</body>
+</html>
